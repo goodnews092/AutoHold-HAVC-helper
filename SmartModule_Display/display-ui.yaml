@@ -1,0 +1,523 @@
+# ============================================================
+# UI Configuration (Screensaver Clock Added)
+# ============================================================
+
+# ------------------------------------------------------------
+# Resources (Fonts & Images)
+# ------------------------------------------------------------
+font:
+  - file: "assets/Montserrat-Regular.ttf"
+    id: montserrat_20
+    size: 20
+  - file: "assets/Montserrat-Regular.ttf"
+    id: montserrat_12
+    size: 12
+  # 시계 표시용 큰 폰트
+  - file: "assets/Montserrat-Regular.ttf"
+    id: montserrat_80
+    size: 80
+
+image:
+  - file: "assets/car65.png"
+    id: img_car
+    type: RGB565
+    transparency: alpha_channel
+  - file: "assets/breathable65.png"
+    id: img_vent
+    type: RGB565
+    transparency: alpha_channel
+  - file: "assets/steer.png"
+    id: img_steer
+    type: RGB565
+    transparency: alpha_channel
+
+# ------------------------------------------------------------
+# Global Variables (UI States)
+# ------------------------------------------------------------
+globals:
+  - id: fl_heat_level
+    type: int
+    initial_value: '0'
+  - id: fr_heat_level
+    type: int
+    initial_value: '0'
+  - id: fl_vent_level
+    type: int
+    initial_value: '0'
+  - id: fr_vent_level
+    type: int
+    initial_value: '0'
+  - id: steer_heat_state
+    type: bool
+    initial_value: 'false'
+  - id: ll_heat_level
+    type: int
+    initial_value: '0'
+  - id: lr_heat_level
+    type: int
+    initial_value: '0'
+  
+  - id: driver_state
+    type: bool
+    initial_value: 'false'
+  - id: ac_state
+    type: bool
+    initial_value: 'false'
+  - id: heat_state
+    type: bool
+    initial_value: 'false'
+  - id: sync_state
+    type: bool
+    initial_value: 'false'
+
+  # 핸들 롱프레스 변수
+  - id: steer_btn_press_start
+    type: int
+    initial_value: '0'
+  - id: steer_btn_pressing
+    type: bool
+    initial_value: 'false'
+  - id: steer_long_press_triggered
+    type: bool
+    initial_value: 'false'
+
+  # 시트 버튼 롱프레스 추적
+  - id: seat_btn_pressing
+    type: bool[6]
+    initial_value: '{false, false, false, false, false, false}'
+  - id: seat_btn_start
+    type: int[6]
+    initial_value: '{0, 0, 0, 0, 0, 0}'
+  - id: seat_btn_long_triggered
+    type: bool[6]
+    initial_value: '{false, false, false, false, false, false}'
+
+  - id: wifi_channel_storage
+    type: int
+    initial_value: '1'
+    restore_value: true
+
+  - id: peer_mac_storage
+    type: std::string
+    initial_value: '""'
+    restore_value: true
+
+# ------------------------------------------------------------
+# [Interval] 스크린세이버 및 버튼 롱프레스 체크
+# ------------------------------------------------------------
+interval:
+  - interval: 100ms
+    then:
+      - lambda: |-
+          process_screensaver_timer();
+
+          // 1. 핸들 버튼 롱프레스 (3초 페어링)
+          if (id(steer_btn_pressing)) {
+              if (!id(steer_long_press_triggered)) {
+                  if (millis() - (uint32_t)id(steer_btn_press_start) > 3000) {
+                      id(steer_long_press_triggered) = true; 
+                      if (global_espnow) global_espnow->start_pairing_mode();
+                  }
+              }
+          }
+
+          // 2. 시트 버튼 롱프레스 체크 (0.75초 즉시 OFF)
+          const uint32_t LONG_PRESS_MS = 750;
+          lv_color_t h_color = lv_color_hex(0xFF8000);
+          lv_color_t v_color = lv_color_hex(0x0095FF);
+
+          for (int i=0; i<6; i++) {
+              if (id(seat_btn_pressing)[i] && !id(seat_btn_long_triggered)[i]) {
+                  if (millis() - (uint32_t)id(seat_btn_start)[i] > LONG_PRESS_MS) {
+                      id(seat_btn_long_triggered)[i] = true;
+                      
+                      switch(i) {
+                          case 0: // FL Heat
+                              id(fl_heat_level) = 0;
+                              update_indicator(id(fl_ind_1), false, h_color);
+                              update_indicator(id(fl_ind_2), false, h_color);
+                              update_indicator(id(fl_ind_3), false, h_color);
+                              break;
+                          case 1: // FR Heat
+                              id(fr_heat_level) = 0;
+                              update_indicator(id(fr_ind_1), false, h_color);
+                              update_indicator(id(fr_ind_2), false, h_color);
+                              update_indicator(id(fr_ind_3), false, h_color);
+                              break;
+                          case 2: // FL Vent
+                              id(fl_vent_level) = 0;
+                              update_indicator(id(fl_vent_ind_1), false, v_color);
+                              update_indicator(id(fl_vent_ind_2), false, v_color);
+                              update_indicator(id(fl_vent_ind_3), false, v_color);
+                              break;
+                          case 3: // FR Vent
+                              id(fr_vent_level) = 0;
+                              update_indicator(id(fr_vent_ind_1), false, v_color);
+                              update_indicator(id(fr_vent_ind_2), false, v_color);
+                              update_indicator(id(fr_vent_ind_3), false, v_color);
+                              break;
+                          case 4: // RL Heat
+                              id(ll_heat_level) = 0;
+                              update_indicator(id(ll_ind_1), false, h_color);
+                              update_indicator(id(ll_ind_2), false, h_color);
+                              break;
+                          case 5: // RR Heat
+                              id(lr_heat_level) = 0;
+                              update_indicator(id(lr_ind_1), false, h_color);
+                              update_indicator(id(lr_ind_2), false, h_color);
+                              break;
+                      }
+                      id(send_hvac_state).execute();
+                      ESP_LOGI("ui", "Seat Button %d Long Pressed -> OFF", i);
+                  }
+              }
+          }
+
+# ------------------------------------------------------------
+# LVGL Configuration
+# ------------------------------------------------------------
+lvgl:
+  color_depth: 16
+  displays:
+    - my_display
+  touchscreens:
+    - touchscreen_id: my_touchscreen
+
+  style_definitions:
+    - id: style_font_80
+      text_font: montserrat_80
+    - id: style_font_20
+      text_font: montserrat_20
+    
+    - id: style_bg
+      bg_color: 0x222222
+    - id: style_btn_rect
+      radius: 12
+      bg_color: 0x484848
+      shadow_width: 10
+      shadow_ofs_y: 6
+      shadow_color: 0x000000
+      shadow_opa: 50%
+      shadow_spread: 2
+      border_width: 1
+      border_color: 0x555555
+      border_opa: 30%
+    - id: style_btn_round
+      radius: 100
+      bg_color: 0x4A484A
+      shadow_width: 12
+      shadow_ofs_y: 7
+      shadow_color: 0x000000
+      shadow_opa: 60%
+      border_width: 1
+      border_color: 0x666666
+      border_opa: 30%
+    - id: style_indicator
+      radius: 50
+      bg_opa: 100%
+      border_width: 0
+    - id: style_label
+      text_font: montserrat_20
+      text_color: 0xFFFFFF
+      text_align: center
+    - id: style_mac_label
+      text_font: montserrat_12
+      text_color: 0x888888
+      text_align: right
+
+  pages:
+    - id: main_hvac_page
+      styles: style_bg
+      on_load:
+        - lambda: |-
+            init_screensaver_clock(id(style_font_80), id(style_font_20));
+
+            init_indicator(id(fl_ind_1)); init_indicator(id(fl_ind_2)); init_indicator(id(fl_ind_3));
+            init_indicator(id(fr_ind_1)); init_indicator(id(fr_ind_2)); init_indicator(id(fr_ind_3));
+            init_indicator(id(fl_vent_ind_1)); init_indicator(id(fl_vent_ind_2)); init_indicator(id(fl_vent_ind_3));
+            init_indicator(id(fr_vent_ind_1)); init_indicator(id(fr_vent_ind_2)); init_indicator(id(fr_vent_ind_3));
+            init_indicator(id(ind_steer));
+            init_indicator(id(ll_ind_1)); init_indicator(id(ll_ind_2));
+            init_indicator(id(lr_ind_1)); init_indicator(id(lr_ind_2));
+            if (global_espnow) global_espnow->set_log_label(id(lbl_mac));
+      widgets:
+        # [1] 운전석 열선
+        - button:
+            id: btn_fl_heat
+            x: -140
+            y: -163
+            width: 120
+            height: 80
+            align: center
+            styles: style_btn_rect
+            widgets:
+              - image: {src: img_car, x: 19, y: 0, align: center}
+              - led: {id: fl_ind_3, width: 24, height: 10, x: -37, y: -18, align: center, styles: style_indicator}
+              - led: {id: fl_ind_2, width: 24, height: 10, x: -37, y: 1, align: center, styles: style_indicator}
+              - led: {id: fl_ind_1, width: 24, height: 10, x: -37, y: 19, align: center, styles: style_indicator}
+            on_press:
+              - lambda: |-
+                  register_user_interaction();
+                  id(seat_btn_pressing)[0] = true; id(seat_btn_start)[0] = millis(); id(seat_btn_long_triggered)[0] = false;
+            on_release:
+              - lambda: |-
+                  id(seat_btn_pressing)[0] = false;
+                  if (!id(seat_btn_long_triggered)[0]) {
+                    if (id(fl_vent_level) > 0) {
+                      id(fl_vent_level) = 0;
+                      lv_color_t v_c = lv_color_hex(0x0095FF);
+                      update_indicator(id(fl_vent_ind_1), false, v_c); update_indicator(id(fl_vent_ind_2), false, v_c); update_indicator(id(fl_vent_ind_3), false, v_c);
+                      id(fl_heat_level) = 3; 
+                    } else { if (id(fl_heat_level) == 0) id(fl_heat_level) = 3; else id(fl_heat_level)--; }
+                    lv_color_t color = lv_color_hex(0xFF8000);
+                    update_indicator(id(fl_ind_1), id(fl_heat_level) >= 1, color); update_indicator(id(fl_ind_2), id(fl_heat_level) >= 2, color); update_indicator(id(fl_ind_3), id(fl_heat_level) >= 3, color);
+                    id(send_hvac_state).execute();
+                  }
+
+        # [2] 조수석 열선
+        - button:
+            id: btn_fr_heat
+            x: 140
+            y: -163
+            width: 120
+            height: 80
+            align: center
+            styles: style_btn_rect
+            widgets:
+              - image: {src: img_car, x: 19, y: 0, align: center}
+              - led: {id: fr_ind_3, width: 24, height: 10, x: -37, y: -18, align: center, styles: style_indicator}
+              - led: {id: fr_ind_2, width: 24, height: 10, x: -37, y: 1, align: center, styles: style_indicator}
+              - led: {id: fr_ind_1, width: 24, height: 10, x: -37, y: 19, align: center, styles: style_indicator}
+            on_press:
+              - lambda: |-
+                  register_user_interaction();
+                  id(seat_btn_pressing)[1] = true; id(seat_btn_start)[1] = millis(); id(seat_btn_long_triggered)[1] = false;
+            on_release:
+              - lambda: |-
+                  id(seat_btn_pressing)[1] = false;
+                  if (!id(seat_btn_long_triggered)[1]) {
+                    if (id(fr_vent_level) > 0) {
+                      id(fr_vent_level) = 0;
+                      lv_color_t v_c = lv_color_hex(0x0095FF);
+                      update_indicator(id(fr_vent_ind_1), false, v_c); update_indicator(id(fr_vent_ind_2), false, v_c); update_indicator(id(fr_vent_ind_3), false, v_c);
+                      id(fr_heat_level) = 3;
+                    } else { if (id(fr_heat_level) == 0) id(fr_heat_level) = 3; else id(fr_heat_level)--; }
+                    lv_color_t color = lv_color_hex(0xFF8000);
+                    update_indicator(id(fr_ind_1), id(fr_heat_level) >= 1, color); update_indicator(id(fr_ind_2), id(fr_heat_level) >= 2, color); update_indicator(id(fr_ind_3), id(fr_heat_level) >= 3, color);
+                    id(send_hvac_state).execute();
+                  }
+
+        # [3] 운전석 통풍
+        - button:
+            id: btn_fl_vent
+            x: -140
+            y: -60
+            width: 120
+            height: 80
+            align: center
+            styles: style_btn_rect
+            widgets:
+              - image: {src: img_vent, x: 18, y: 1, align: center}
+              - led: {id: fl_vent_ind_3, width: 24, height: 10, x: -37, y: -18, align: center, styles: style_indicator}
+              - led: {id: fl_vent_ind_2, width: 24, height: 10, x: -37, y: 1, align: center, styles: style_indicator}
+              - led: {id: fl_vent_ind_1, width: 24, height: 10, x: -37, y: 19, align: center, styles: style_indicator}
+            on_press:
+              - lambda: |-
+                  register_user_interaction();
+                  id(seat_btn_pressing)[2] = true; id(seat_btn_start)[2] = millis(); id(seat_btn_long_triggered)[2] = false;
+            on_release:
+              - lambda: |-
+                  id(seat_btn_pressing)[2] = false;
+                  if (!id(seat_btn_long_triggered)[2]) {
+                    if (id(fl_heat_level) > 0) {
+                      id(fl_heat_level) = 0;
+                      lv_color_t h_c = lv_color_hex(0xFF8000);
+                      update_indicator(id(fl_ind_1), false, h_c); update_indicator(id(fl_ind_2), false, h_c); update_indicator(id(fl_ind_3), false, h_c);
+                      id(fl_vent_level) = 3;
+                    } else { if (id(fl_vent_level) == 0) id(fl_vent_level) = 3; else id(fl_vent_level)--; }
+                    lv_color_t color = lv_color_hex(0x0095FF);
+                    update_indicator(id(fl_vent_ind_1), id(fl_vent_level) >= 1, color); update_indicator(id(fl_vent_ind_2), id(fl_vent_level) >= 2, color); update_indicator(id(fl_vent_ind_3), id(fl_vent_level) >= 3, color);
+                    id(send_hvac_state).execute();
+                  }
+
+        # [4] 조수석 통풍
+        - button:
+            id: btn_fr_vent
+            x: 140
+            y: -60
+            width: 120
+            height: 80
+            align: center
+            styles: style_btn_rect
+            widgets:
+              - image: {src: img_vent, x: 18, y: 1, align: center}
+              - led: {id: fr_vent_ind_3, width: 24, height: 10, x: -37, y: -18, align: center, styles: style_indicator}
+              - led: {id: fr_vent_ind_2, width: 24, height: 10, x: -37, y: 1, align: center, styles: style_indicator}
+              - led: {id: fr_vent_ind_1, width: 24, height: 10, x: -37, y: 19, align: center, styles: style_indicator}
+            on_press:
+              - lambda: |-
+                  register_user_interaction();
+                  id(seat_btn_pressing)[3] = true; id(seat_btn_start)[3] = millis(); id(seat_btn_long_triggered)[3] = false;
+            on_release:
+              - lambda: |-
+                  id(seat_btn_pressing)[3] = false;
+                  if (!id(seat_btn_long_triggered)[3]) {
+                    if (id(fr_heat_level) > 0) {
+                      id(fr_heat_level) = 0;
+                      lv_color_t h_c = lv_color_hex(0xFF8000);
+                      update_indicator(id(fr_ind_1), false, h_c); update_indicator(id(fr_ind_2), false, h_c); update_indicator(id(fr_ind_3), false, h_c);
+                      id(fr_vent_level) = 3;
+                    } else { if (id(fr_vent_level) == 0) id(fr_vent_level) = 3; else id(fr_vent_level)--; }
+                    lv_color_t color = lv_color_hex(0x0095FF);
+                    update_indicator(id(fr_vent_ind_1), id(fr_vent_level) >= 1, color); update_indicator(id(fr_vent_ind_2), id(fr_vent_level) >= 2, color); update_indicator(id(fr_vent_ind_3), id(fr_vent_level) >= 3, color);
+                    id(send_hvac_state).execute();
+                  }
+
+        # [5] 핸들 열선
+        - button:
+            id: btn_steer
+            x: 0
+            y: -60
+            width: 95
+            height: 95
+            align: center
+            styles: style_btn_round
+            widgets:
+              - image: {src: img_steer, x: 0, y: 10, align: center}
+              - led: {id: ind_steer, width: 39, height: 10, x: 0, y: -28, align: center, styles: style_indicator}
+            on_press:
+              - lambda: |-
+                  register_user_interaction();
+                  id(steer_btn_pressing) = true; id(steer_btn_press_start) = millis(); id(steer_long_press_triggered) = false;
+            on_release:
+              - lambda: |-
+                  id(steer_btn_pressing) = false;
+                  if (!id(steer_long_press_triggered)) {
+                      id(steer_heat_state) = !id(steer_heat_state);
+                      lv_color_t color = lv_color_hex(0xFF8000);
+                      update_indicator(id(ind_steer), id(steer_heat_state), color);
+                      id(send_hvac_state).execute();
+                  }
+
+        # [6] RL Heat
+        - button:
+            id: btn_ll_heat
+            x: -140
+            y: 42
+            width: 120
+            height: 80
+            align: center
+            styles: style_btn_rect
+            widgets:
+              - image: {src: img_car, x: 19, y: 0, align: center}
+              - led: {id: ll_ind_2, width: 24, height: 10, x: -37, y: -10, align: center, styles: style_indicator}
+              - led: {id: ll_ind_1, width: 24, height: 10, x: -37, y: 12, align: center, styles: style_indicator}
+            on_press:
+              - lambda: |-
+                  register_user_interaction();
+                  id(seat_btn_pressing)[4] = true; id(seat_btn_start)[4] = millis(); id(seat_btn_long_triggered)[4] = false;
+            on_release:
+              - lambda: |-
+                  id(seat_btn_pressing)[4] = false;
+                  if (!id(seat_btn_long_triggered)[4]) {
+                    if (id(ll_heat_level) == 0) id(ll_heat_level) = 2; else id(ll_heat_level)--;
+                    lv_color_t color = lv_color_hex(0xFF8000);
+                    update_indicator(id(ll_ind_1), id(ll_heat_level) >= 1, color); update_indicator(id(ll_ind_2), id(ll_heat_level) >= 2, color);
+                    id(send_hvac_state).execute();
+                  }
+
+        # [7] RR Heat
+        - button:
+            id: btn_lr_heat
+            x: 140
+            y: 42
+            width: 120
+            height: 80
+            align: center
+            styles: style_btn_rect
+            widgets:
+              - image: {src: img_car, x: 19, y: 0, align: center}
+              - led: {id: lr_ind_2, width: 24, height: 10, x: -37, y: -10, align: center, styles: style_indicator}
+              - led: {id: lr_ind_1, width: 24, height: 10, x: -37, y: 12, align: center, styles: style_indicator}
+            on_press:
+              - lambda: |-
+                  register_user_interaction();
+                  id(seat_btn_pressing)[5] = true; id(seat_btn_start)[5] = millis(); id(seat_btn_long_triggered)[5] = false;
+            on_release:
+              - lambda: |-
+                  id(seat_btn_pressing)[5] = false;
+                  if (!id(seat_btn_long_triggered)[5]) {
+                    if (id(lr_heat_level) == 0) id(lr_heat_level) = 2; else id(lr_heat_level)--;
+                    lv_color_t color = lv_color_hex(0xFF8000);
+                    update_indicator(id(lr_ind_1), id(lr_heat_level) >= 1, color); update_indicator(id(lr_ind_2), id(lr_heat_level) >= 2, color);
+                    id(send_hvac_state).execute();
+                  }
+
+        # [Bottom Buttons]
+        - button:
+            id: btn_driver
+            x: -175
+            y: 180
+            width: 100
+            height: 60
+            align: center
+            styles: style_btn_rect
+            on_click:
+              - lambda: |-
+                  register_user_interaction(); id(driver_state) = !id(driver_state);
+                  update_text_glow(id(lbl_driver), id(driver_state), lv_color_hex(0x0095FF)); id(send_hvac_state).execute();
+            widgets:
+              - label: {id: lbl_driver, text: "DRIVER\nONLY", styles: style_label, align: center}
+
+        - button:
+            id: btn_ac
+            x: -58
+            y: 180
+            width: 100
+            height: 60
+            align: center
+            styles: style_btn_rect
+            on_click:
+              - lambda: |-
+                  register_user_interaction(); id(ac_state) = !id(ac_state);
+                  update_text_glow(id(lbl_ac), id(ac_state), lv_color_hex(0x0095FF)); id(send_hvac_state).execute();
+            widgets:
+              - label: {id: lbl_ac, text: "A / C", styles: style_label, align: center}
+
+        - button:
+            id: btn_heat
+            x: 58
+            y: 180
+            width: 100
+            height: 60
+            align: center
+            styles: style_btn_rect
+            on_click:
+              - lambda: |-
+                  register_user_interaction(); id(heat_state) = !id(heat_state);
+                  update_text_glow(id(lbl_heat), id(heat_state), lv_color_hex(0xFF8000)); id(send_hvac_state).execute();
+            widgets:
+              - label: {id: lbl_heat, text: "HEAT", styles: style_label, align: center}
+
+        - button:
+            id: btn_sync
+            x: 175
+            y: 180
+            width: 100
+            height: 60
+            align: center
+            styles: style_btn_rect
+            on_click:
+              - lambda: |-
+                  register_user_interaction(); id(sync_state) = !id(sync_state);
+                  update_text_glow(id(lbl_sync), id(sync_state), lv_color_hex(0x2DA041)); id(send_hvac_state).execute();
+            widgets:
+              - label: {id: lbl_sync, text: "SYNC", styles: style_label, align: center}
+
+        - label:
+            id: lbl_mac
+            x: -10
+            y: -10
+            align: bottom_right
+            text: "--:--:--:--:--:--"
+            styles: style_mac_label

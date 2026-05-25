@@ -1,0 +1,82 @@
+# ============================================================
+# Hardware Configuration (Display, Touch, Pinout)
+# ============================================================
+
+esphome:
+  platformio_options:
+    build_flags:
+      - -DESPHOME_NO_FACTORY_IMAGE
+
+# ESP32-S3 설정
+esp32:
+  board: esp32-s3-devkitc-1
+  variant: esp32s3
+  flash_size: 16MB
+  framework:
+    type: esp-idf
+
+# PSRAM 설정
+psram:
+  mode: octal
+  speed: 80MHz
+
+# 플래시 쓰기 설정
+preferences:
+  flash_write_interval: 10s
+
+# ------------------------------------------------------------
+# Backlight & Outputs
+# ------------------------------------------------------------
+output:
+  - platform: ledc
+    pin: GPIO38
+    id: backlight_pwm
+    frequency: 1000Hz
+
+light:
+  - platform: monochromatic
+    output: backlight_pwm
+    name: Display Backlight
+    id: display_backlight
+    restore_mode: ALWAYS_ON
+
+# ------------------------------------------------------------
+# I2C & Touchscreen
+# ------------------------------------------------------------
+i2c:
+  - id: bus_a
+    sda: GPIO19
+    scl:
+      number: GPIO45
+      ignore_strapping_warning: true
+    frequency: 100kHz
+
+touchscreen:
+  platform: gt911
+  id: my_touchscreen
+  i2c_id: bus_a
+  display: my_display
+  transform:
+    mirror_x: false
+    mirror_y: false
+  update_interval: 50ms
+
+# ------------------------------------------------------------
+# Display (MIPI RGB) & SPI
+# ------------------------------------------------------------
+display:
+  - platform: mipi_rgb
+    id: my_display
+    model: GUITION-4848S040 # 하드웨어 모델명은 유지합니다
+    rotation: 180
+    data_rate: 40MHz
+    color_order: RGB
+    invert_colors: false
+    dimensions:               
+      width: 480
+      height: 480
+
+spi:
+  - id: lcd_spi
+    clk_pin: GPIO48
+    mosi_pin: GPIO47

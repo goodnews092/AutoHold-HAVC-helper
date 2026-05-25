@@ -1,0 +1,195 @@
+# ============================================================
+# Guition ESP32-S3 HVAC Control - Main Entry Point
+# ============================================================
+esphome:
+  name: display-hvac-control # [변경] guition -> display
+  friendly_name: Display HVAC Panel
+  project:
+    name: "Display.HVAC_UI_Modular" # [변경] Guition -> Display
+    version: "5.2"
+
+  includes:
+    - display-ui-helpers.h # [변경] 파일명 수정
+    - display-espnow.h     # [변경] 파일명 수정
+
+  on_boot:
+    priority: -100
+    then:
+      - lambda: |-
+          int stored_ch = id(wifi_channel);
+          if (stored_ch >= 1 && stored_ch <= 13) {
+             esp_wifi_set_channel(stored_ch, WIFI_SECOND_CHAN_NONE);
+             ESP_LOGI("boot", "Restored WiFi Channel to: %d", stored_ch);
+          }
+      - lambda: |-
+          auto my_espnow = new DisplayESPNow(); // [변경] 클래스명 수정
+          App.register_component(my_espnow);
+          global_espnow = my_espnow;
+          my_espnow->set_log_label(id(lbl_mac));
+          my_espnow->setup();
+
+packages:
+  hardware: !include display-hardware.yaml # [변경] 파일명 수정
+  user_interface: !include display-ui.yaml # [변경] 파일명 수정
+
+logger:
+  level: DEBUG
+
+api:
+  reboot_timeout: 0s
+    
+ota:
+  - platform: esphome
+
+web_server:
+  port: 80
+  version: 2
+  include_internal: false
+  ota: false
+  log: true
+  local: true
+
+wifi:
+  ap:
+    ssid: "SmartModule-Display"
+    password: "12345678" 
+    manual_ip:
+      static_ip: 192.168.4.1
+      gateway: 192.168.4.1
+      subnet: 255.255.255.0
+  output_power: 9 
+  power_save_mode: none
+  reboot_timeout: 0s
+
+# ============================================================
+# 전역 변수
+# ============================================================
+globals:
+  - id: wifi_channel
+    type: int
+    restore_value: yes
+    initial_value: '1'
+
+# ============================================================
+# [추가] 오토라이트 작동 시 밝기 설정 (웹 UI)
+# [수정] 0.0~1.0 float 스케일에서 10~100% 정수 스케일로 변경
+# ============================================================
+number:
+  - platform: template
+    name: "Auto-Light Dim Level (%)"
+    id: dim_brightness_level
+    icon: "mdi:brightness-percent"
+    optimistic: true
+    min_value: 10
+    max_value: 100
+    step: 5
+    initial_value: 30
+    restore_value: true
+    unit_of_measurement: "%"
+    
+    # 웹에서 값을 변경했을 때 로그 출력 (실제 적용은 ESP-NOW 패킷 수신 시 /100 계산되어 처리됨)
+    set_action:
+      then:
+        - lambda: |-
+            ESP_LOGI("dim", "Dim level set to %d%% (will apply as %.2f)", (int)x, x/100.0f);
+
+# ============================================================
+# WiFi 채널 선택기
+# ============================================================
+select:
+  - platform: template
+    name: "WiFi Channel"
+    id: wifi_channel_selector
+    icon: "mdi:wifi-settings"
+    optimistic: true
+    internal: false
+    options: ["1", "2", "3", "4", "5", "6", "7", "8", "9", "10", "11", "12", "13"]
+    initial_option: "1"
+    restore_value: true
+    set_action:
+      then:
+        - lambda: |-
+            int ch = atoi(x.c_str());
+            id(wifi_channel) = ch; 
+            esp_wifi_set_channel(ch, WIFI_SECOND_CHAN_NONE);
+            if (id(lbl_mac) != nullptr) {
+               char buf[32]; snprintf(buf, sizeof(buf), "CH Set: %d", ch);
+               lv_label_set_text(id(lbl_mac), buf);
+            }
+
+# ============================================================
+# 재부팅 버튼
+# ============================================================
+button:
+  - platform: template
+    name: "Apply & Reboot"
+    id: btn_reboot_web
+    icon: "mdi:restart-alert"
+    internal: false
+    on_press:
+      then:
+        - lambda: if (id(lbl_mac)) lv_label_set_text(id(lbl_mac), "Rebooting...");
+        - delay: 2s
+        - lambda: App.safe_reboot();
+
+# ============================================================
+# 상태 표시 센서들
+# ============================================================
+sensor:
+  - platform: uptime
+    name: "Uptime"
+    icon: "mdi:clock-outline"
+    internal: false
+
+  - platform: wifi_signal
+    name: "WiFi Signal"
+    icon: "mdi:wifi-strength-2"
+    update_interval: 60s
+    internal: false
+
+text_sensor:
+  - platform: wifi_info
+    ip_address: { name: "IP Address", internal: false }
+    mac_address: { name: "MAC Address", internal: false }
+
+  - platform: template
+    name: "ESP-NOW Status"
+    id: espnow_status
+    icon: "mdi:access-point-network"
+    internal: false
+    update_interval: 10s
+    lambda: |-
+      return (global_espnow != nullptr) ? std::string("Connected") : std::string("Disconnected");
+
+binary_sensor:
+  - platform: status
+    name: "Device Online"
+    icon: "mdi:check-network"
+    internal: false
+
+# ============================================================
+# HVAC 데이터 전송 스크립트
+# ============================================================
+script:
+  - id: send_hvac_state
+    mode: restart
+    then:
+      - lambda: |-
+          HvacData data;
+          data.packet_type = 0xA1;
+          data.fl_heat = id(fl_heat_level);
+          data.fr_heat = id(fr_heat_level);
+          data.fl_vent = id(fl_vent_level);
+          data.fr_vent = id(fr_vent_level);
+          data.steer_heat = id(steer_heat_state);
+          data.rl_heat = id(ll_heat_level);
+          data.rr_heat = id(lr_heat_level);
+          data.driver_only = id(driver_state);
+          data.ac = id(ac_state);
+          data.heat = id(heat_state);
+          data.sync = id(sync_state);
+          
+          if (global_espnow != nullptr) {
+            global_espnow->send_hvac_data(data);
+            ESP_LOGD("hvac", "HVAC data sent");
+          }
