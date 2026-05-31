@@ -5,8 +5,8 @@
  * - 수정 사항:
  * 1. [2026-02-02] CAN ID 0x413(오토라이트), 0x4F0(시간/날짜) 파싱 로직 추가
  * 2. [수정] 0x4F0 데이터 매핑 오류 수정 (Byte 4:월, Byte 5:년)
- * - 증상: 년도가 72(0x48, Feb encoded)로 표시되는 문제 해결
  * 3. 분(Minute) 변경 시 memcmp 차이 발생 -> 즉시 전송 트리거됨
+ * 4. [2026-05-31] 0x2E1 ID의 5번째 바이트(data[4])가 0x40일 때 0x1A2와 동일하게 속도제한 활성화 상태로 간주 (캔슬 버튼 필터링 추가)
  */
 
 #include <Arduino.h>
@@ -66,6 +66,7 @@ struct SharedData {
   long rawSpeedVal;       
   bool btnCancelPressed;  
   bool isCruiseActive;    
+  bool isLimitActive;       // [신규] 0x2E1 상태용 변수 (data[4] == 0x40)
   bool isBrakePressed;    
   unsigned long lastUpdateTime; 
   
@@ -321,28 +322,18 @@ void canReceiveTask(void *parameter) {
                  }
 
                  // 2. 시간/날짜 (0x4F0)
-                 // [수정] Byte Mapping 교체
-                 // Byte 4(index 4): Month (Encoded 0x40 + M*4) -> 값 72는 2월(0x48)
-                 // Byte 5(index 5): Year (Offset) -> 값 26
-                 // Byte 6(index 6): Day -> 값 03
                  case 0x4F0: {
                      sharedData.hour = message.data[1];
                      sharedData.minute = message.data[2];
                      
-                     // [수정] 월 파싱 (index 4)
                      if (message.data[4] >= 0x40) {
                          sharedData.month = (message.data[4] - 0x40) / 4;
                      } else {
                          sharedData.month = 1; 
                      }
                      
-                     // [수정] 년 파싱 (index 5)
                      sharedData.year = message.data[5];
-                     
-                     // 일 파싱 (index 6)
                      sharedData.day = message.data[6];
-                     
-                     // 요일 재계산 (자동)
                      sharedData.weekday = calcWeekday(sharedData.year, sharedData.month, sharedData.day);
                      
                      dataUpdated = true;
@@ -353,6 +344,10 @@ void canReceiveTask(void *parameter) {
                  case 0x039: sharedData.gearState = message.data[0]; dataUpdated = true; break;
                  case 0x1AC: sharedData.rawSpeedVal = message.data[0]; dataUpdated = true; break;
                  case 0x1A2: sharedData.isCruiseActive = (message.data[0] != 0x00); dataUpdated = true; break;
+                 
+                 // [추가] 0x2E1의 5번째 바이트(data[4])가 0x40일 때 활성화로 간주
+                 case 0x2E1: sharedData.isLimitActive = (message.data[4] == 0x40); dataUpdated = true; break;
+
                  case BRAKE_ID: sharedData.isBrakePressed = (message.data[5] & 0x40) ? true : false; dataUpdated = true; break;
                  case TARGET_ID: 
                    bool isPressedNow = (message.data[2] == 0x04);
@@ -387,7 +382,8 @@ void logicTask(void *parameter) {
 
   uint8_t localGear = 0xFF, localAh = 0xFF;
   int currentSpeed = 0;
-  bool localCancelBtn = false, localCruiseActive = false, localBrakePressed = false;
+  // [수정] localLimitActive 추가
+  bool localCancelBtn = false, localCruiseActive = false, localLimitActive = false, localBrakePressed = false;
   unsigned long lastDataTime = 0; 
   uint8_t filteredGear = 0; 
   int neutralCounter = 0;
@@ -454,6 +450,7 @@ void logicTask(void *parameter) {
       localAh = sharedData.ahStatus;
       currentSpeed = (int)sharedData.rawSpeedVal;
       localCruiseActive = sharedData.isCruiseActive;
+      localLimitActive = sharedData.isLimitActive; // [추가] 0x2E1 상태 복사
       localBrakePressed = sharedData.isBrakePressed; 
       lastDataTime = sharedData.lastUpdateTime; 
       
@@ -503,7 +500,6 @@ void logicTask(void *parameter) {
             currentFeedback.heat = sharedData.heat;
             currentFeedback.sync = sharedData.sync;
             
-            // [업데이트됨] CAN에서 읽은 시간 정보 반영
             currentFeedback.auto_light = sharedData.auto_light;
             currentFeedback.year = sharedData.year;
             currentFeedback.month = sharedData.month;
@@ -515,9 +511,6 @@ void logicTask(void *parameter) {
             xSemaphoreGive(xMutex_SharedData);
             
             bool isChanged = false;
-            // [중요] memcmp는 구조체 전체 바이트를 비교합니다.
-            // currentFeedback.minute 값이 1분 바뀌면 lastSentFeedback과 달라지므로
-            // isChanged는 true가 되고, 아래에서 send 로직을 실행하게 됩니다.
             if (memcmp(&currentFeedback, &lastSentFeedback, sizeof(FeedbackData)) != 0) {
                 isChanged = true;
             }
@@ -551,7 +544,7 @@ void logicTask(void *parameter) {
         continue;
     }
 
-    // === 오토홀드 로직 (기존 유지) ===
+    // === 오토홀드 로직 ===
     if (isFirstBootLoop) {
         if (localAh == 0x04) flagManualOff = true; 
         prevAhStatus = localAh;
@@ -584,7 +577,8 @@ void logicTask(void *parameter) {
 
     bool relayTriggered = false;
 
-    if (localCancelBtn && !localCruiseActive && currentSpeed < CONST_SPD_50) {
+    // [수정] localCruiseActive 또는 localLimitActive 중 하나라도 참이면 필터링 (명령 무시)
+    if (localCancelBtn && !(localCruiseActive || localLimitActive) && currentSpeed < CONST_SPD_50) {
         if (!flagManualOff) {
             beep(1); 
             if (flagTempPause) {
@@ -676,6 +670,8 @@ void setup() {
   sharedData.gearState = 0xFF;
   sharedData.ahStatus = 0xFF;
   sharedData.rawSpeedVal = 0;
+  sharedData.isCruiseActive = false;
+  sharedData.isLimitActive = false; // [추가] 초기화
   sharedData.fl_heat = 0; sharedData.fl_vent = 0;
   sharedData.fr_heat = 0; sharedData.fr_vent = 0;
   sharedData.rl_heat = 0; sharedData.rr_heat = 0;
